@@ -1,0 +1,68 @@
+CC = clang
+CFLAGS = -O2 -g -Wall -Wextra
+
+# BPF программа
+BPF_CFLAGS = -O2 -target bpf -D__KERNEL__ -D__ASM_SYSREG_H \
+             -Wno-unused-value -Wno-pointer-sign \
+             -Wno-compare-distinct-pointer-types \
+             -Wno-gnu-variable-sized-type-not-at-end \
+             -Wno-address-of-packed-member -Wno-tautological-compare \
+             -Wno-unknown-warning-option
+
+# Userspace программа
+USER_CFLAGS = $(CFLAGS) -I/usr/include
+USER_LDFLAGS = -lbpf -lelf -lz
+
+TARGETS = xdp_firewall_kern.o xdp_firewall_user
+
+.PHONY: all clean install
+
+all: $(TARGETS)
+
+xdp_firewall_kern.o: xdp_firewall_kern.c
+	$(CC) $(BPF_CFLAGS) -c $< -o $@
+
+xdp_firewall_user: xdp_firewall_user.c
+	$(CC) $(USER_CFLAGS) $< -o $@ $(USER_LDFLAGS)
+
+clean:
+	rm -f $(TARGETS)
+
+install: all
+	sudo cp xdp_firewall_user /usr/local/bin/
+	sudo cp xdp_firewall_kern.o /usr/local/lib/
+	sudo chmod +x /usr/local/bin/xdp_firewall_user
+
+# Правила для тестирования
+test-compile: all
+	@echo "Компиляция завершена успешно"
+
+test-load: all
+	@echo "Тестируем загрузку на loopback интерфейсе..."
+	sudo ./xdp_firewall_user lo &
+	@sleep 2
+	@sudo pkill -f xdp_firewall_user || true
+	@echo "Тест загрузки завершен"
+
+# Проверка зависимостей
+check-deps:
+	@echo "Проверяем зависимости..."
+	@which clang > /dev/null || (echo "ОШИБКА: clang не установлен" && exit 1)
+	@pkg-config --exists libbpf || (echo "ОШИБКА: libbpf-dev не установлен" && exit 1)
+	@ls /usr/include/linux/bpf.h > /dev/null || (echo "ОШИБКА: linux-headers не установлены" && exit 1)
+	@echo "Все зависимости установлены"
+
+# Установка зависимостей для Debian/Ubuntu
+install-deps:
+	sudo apt update
+	sudo apt install -y clang llvm libbpf-dev linux-headers-$(shell uname -r) \
+		build-essential pkg-config libelf-dev
+
+# Отладочная информация
+debug-info:
+	@echo "=== Информация о системе ==="
+	@echo "Архитектура: $(shell uname -m)"
+	@echo "Ядро: $(shell uname -r)"
+	@echo "Clang: $(shell clang --version | head -1)"
+	@echo "libbpf: $(shell pkg-config --modversion libbpf 2>/dev/null || echo 'не найдено')"
+	@echo "BPF в ядре: $(shell grep -c CONFIG_BPF=y /boot/config-$(shell uname -r) 2>/dev/null || echo 'неизвестно')"
