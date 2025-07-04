@@ -2,12 +2,16 @@ CC = clang
 CFLAGS = -O2 -g -Wall -Wextra
 
 # BPF программа
-BPF_CFLAGS = -O2 -target bpf -D__KERNEL__ -D__ASM_SYSREG_H \
-             -Wno-unused-value -Wno-pointer-sign \
-             -Wno-compare-distinct-pointer-types \
-             -Wno-gnu-variable-sized-type-not-at-end \
-             -Wno-address-of-packed-member -Wno-tautological-compare \
-             -Wno-unknown-warning-option
+BPF_CFLAGS = -O2 -g -target bpf -I. \
+    -Wall -Wno-unused-value -Wno-pointer-sign \
+    -Wno-gnu-variable-sized-type-not-at-end \
+    -Wno-address-of-packed-member
+#BPF_CFLAGS = -O2 -target bpf -D__KERNEL__ -D__ASM_SYSREG_H \
+#             -Wno-unused-value -Wno-pointer-sign \
+#             -Wno-compare-distinct-pointer-types \
+#             -Wno-gnu-variable-sized-type-not-at-end \
+#             -Wno-address-of-packed-member -Wno-tautological-compare \
+#             -Wno-unknown-warning-option
 
 # Userspace программа
 USER_CFLAGS = $(CFLAGS) -I/usr/include
@@ -39,10 +43,9 @@ test-compile: all
 
 test-load: all
 	@echo "Тестируем загрузку на loopback интерфейсе..."
-	sudo ./xdp_firewall_user lo &
-	@sleep 2
-	@sudo pkill -f xdp_firewall_user || true
+	@sudo ./xdp_firewall_user lo --test > /tmp/xdp.log 2>&1 &
 	@echo "Тест загрузки завершен"
+	@cat /tmp/xdp.log
 
 # Проверка зависимостей
 check-deps:

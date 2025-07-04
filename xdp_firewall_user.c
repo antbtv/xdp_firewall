@@ -13,6 +13,16 @@
 #define MAX_RULES 1024
 #define MAX_BLOCKED_IPS 1024
 
+#ifndef XDP_FLAGS_SKB_MODE
+#define XDP_FLAGS_SKB_MODE 2U
+#endif
+#ifndef XDP_FLAGS_DRV_MODE
+#define XDP_FLAGS_DRV_MODE 4U
+#endif
+#ifndef XDP_FLAGS_UPDATE_IF_NOEXIST
+#define XDP_FLAGS_UPDATE_IF_NOEXIST 1U
+#endif
+
 // Структуры должны совпадать с ядерными
 struct rule {
     uint32_t src_ip;
@@ -38,17 +48,18 @@ static int stats_map_fd = -1;
 static int prog_fd = -1;
 static int ifindex = -1;
 
-static void cleanup() {
-    if (ifindex > 0 && prog_fd > 0) {
-        printf("Отключаем XDP программу от интерфейса...\n");
-        bpf_xdp_detach(ifindex, 0, NULL);
-    }
-}
+//static void cleanup() {
+//    if (ifindex > 0 && prog_fd > 0) {
+//        printf("Отключаем XDP программу от интерфейса...\n");
+//        bpf_xdp_detach(ifindex, 0, NULL);
+//    }
+//}
 
-static void signal_handler(int sig) {
-    cleanup();
-    exit(0);
-}
+//static void signal_handler(int sig) {
+//    (void)sig;
+//    cleanup();
+//    exit(0);
+//}
 
 // Функция для конвертации IP строки в число
 static uint32_t ip_to_int(const char *ip_str) {
@@ -86,6 +97,16 @@ static int add_rule(uint32_t rule_id, const char *src_ip, const char *dst_ip,
     return 0;
 }
 
+static int delete_rule(uint32_t rule_id) {
+    if (bpf_map_delete_elem(rules_map_fd, &rule_id) != 0) {
+        printf("Ошибка удаления правила %u: %s\n", rule_id, strerror(errno));
+        return -1;
+    }
+    printf("Правило %u удалено\n", rule_id);
+    return 0;
+}
+
+
 // Функция для блокировки IP
 static int block_ip(const char *ip_str) {
     uint32_t ip = ip_to_int(ip_str);
@@ -104,6 +125,21 @@ static int block_ip(const char *ip_str) {
     printf("IP %s заблокирован\n", ip_str);
     return 0;
 }
+
+static int unblock_ip(const char *ip_str) {
+    uint32_t ip = ip_to_int(ip_str);
+    if (ip == 0) {
+        printf("Ошибка: некорректный IP адрес\n");
+        return -1;
+    }
+    if (bpf_map_delete_elem(blocked_ips_fd, &ip) != 0) {
+        printf("Ошибка разблокировки IP %s: %s\n", ip_str, strerror(errno));
+        return -1;
+    }
+    printf("IP %s разблокирован\n", ip_str);
+    return 0;
+}
+
 
 // Функция для показа статистики
 static void show_stats() {
@@ -134,20 +170,49 @@ static void print_usage(const char *prog_name) {
     printf("  -b <ip>  Заблокировать IP адрес\n");
     printf("  -s       Показать статистику\n");
     printf("  -d       Демон режим (мониторинг)\n\n");
+    printf("  --detach Полностью отключить XDP Firewall от интерфейса\n");
     printf("Примеры:\n");
     printf("  %s eth0 -r 1 0 0 0 22 6 0    # Блокировать SSH на порт 22\n", prog_name);
     printf("  %s eth0 -r 2 192.168.1.100 0 0 0 0 1  # Разрешить трафик с IP\n", prog_name);
     printf("  %s eth0 -b 192.168.1.200    # Заблокировать IP\n", prog_name);
 }
 
+static void detach_firewall(const char *interface) {
+    int idx = if_nametoindex(interface);
+    if (idx == 0) {
+        printf("Ошибка: интерфейс %s не найден\n", interface);
+        return;
+    }
+
+    if (bpf_xdp_detach(idx, 0, NULL) != 0) {
+        printf("Ошибка отключения XDP от %s: %s\n", interface, strerror(errno));
+    } else {
+        printf("XDP Firewall успешно отключён от интерфейса %s\n", interface);
+    }
+}
+
+
 int main(int argc, char **argv) {
     struct bpf_object *obj;
     struct bpf_program *prog;
     int err;
     
+    int test_mode = 0;
+    printf(">>> xdp_firewall_user started\n");
+    fflush(stdout);
+
+    if (argc >= 3 && strcmp(argv[2], "--test") == 0) {
+        test_mode = 1;
+    }
+
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
+    }
+
+    if (argc == 3 && strcmp(argv[2], "--detach") == 0) {
+        detach_firewall(argv[1]);
+        return 0;
     }
     
     char *interface = argv[1];
@@ -172,6 +237,9 @@ int main(int argc, char **argv) {
     }
     
     err = bpf_object__load(obj);
+    printf(">>> BPF object loaded successfully\n");
+    fflush(stdout);
+    
     if (err) {
         printf("Ошибка загрузки BPF объекта: %d\n", err);
         return 1;
@@ -205,8 +273,8 @@ int main(int argc, char **argv) {
     printf("XDP Firewall успешно загружен на интерфейс %s\n", interface);
     
     // Устанавливаем обработчик сигналов
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    //signal(SIGINT, signal_handler);
+    //signal(SIGTERM, signal_handler);
     
     // Обрабатываем аргументы командной строки
     for (int i = 2; i < argc; i++) {
@@ -229,7 +297,14 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-s") == 0) {
             // Показать статистику
             show_stats();
-        } else if (strcmp(argv[i], "-d") == 0) {
+        } else if (strcmp(argv[i], "-rdel") == 0 && i + 1 < argc) {
+    	    uint32_t rule_id = atoi(argv[i+1]);
+    	    delete_rule(rule_id);
+    	    i++;
+	} else if (strcmp(argv[i], "-bun") == 0 && i + 1 < argc) {
+    	    unblock_ip(argv[i+1]);
+    	    i++;
+	}  else if (strcmp(argv[i], "-d") == 0) {
             // Демон режим
             printf("Запущен режим мониторинга. Нажмите Ctrl+C для выхода.\n");
             while (1) {
@@ -239,14 +314,19 @@ int main(int argc, char **argv) {
         }
     }
     
-    if (argc == 2) {
-        printf("Firewall активен. Используйте -h для справки по командам.\n");
-        printf("Нажмите Ctrl+C для выхода.\n");
-        while (1) {
-            sleep(1);
+    if (argc == 2 || test_mode) {
+        if (test_mode) {
+            printf(">>> Тестовый режим: ждём 2 секунды и выходим\n");
+            sleep(2);
+        } else {
+            printf("Firewall активен. Используйте -h для справки по командам.\n");
+            printf("Нажмите Ctrl+C для выхода.\n");
+            while (1) {
+                sleep(1);
+            }
         }
     }
     
-    cleanup();
+    //cleanup();
     return 0;
 }
