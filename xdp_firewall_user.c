@@ -40,6 +40,10 @@ struct stats {
     uint64_t packets_dropped;
     uint64_t packets_passed;
     uint64_t bytes_processed;
+    uint64_t tcp_packets;
+    uint64_t udp_packets;
+    uint64_t icmp_packets;
+    uint64_t processing_time_ns;
 };
 
 static int rules_map_fd = -1;
@@ -160,6 +164,73 @@ static void show_stats() {
     }
 }
 
+// Функция для непрерывного мониторинга производительности
+static void performance_monitor(int duration_seconds) {
+    printf("=== Мониторинг производительности (%d сек) ===\n", duration_seconds);
+    printf("Время\tПакетов/сек\tДроп/сек\tПропуск/сек\tCPU%%\n");
+    
+    struct stats prev_stat = {0};
+    struct stats curr_stat = {0};
+    uint32_t key = 0;
+    
+    for (int i = 0; i < duration_seconds; i++) {
+        sleep(1);
+        
+        if (bpf_map_lookup_elem(stats_map_fd, &key, &curr_stat) == 0) {
+            uint64_t pps = curr_stat.packets_processed - prev_stat.packets_processed;
+            uint64_t drops = curr_stat.packets_dropped - prev_stat.packets_dropped;
+            uint64_t passes = curr_stat.packets_passed - prev_stat.packets_passed;
+            
+            printf("%d\t%lu\t\t%lu\t\t%lu\t\t-\n", i+1, pps, drops, passes);
+            
+            prev_stat = curr_stat;
+        }
+    }
+}
+
+// Функция для стресс-теста
+static void stress_test_mode() {
+    printf("=== Режим стресс-теста ===\n");
+    printf("Для генерации нагрузки используйте на другом хосте:\n");
+    printf("# TCP нагрузка:\n");
+    printf("for i in {1..1000}; do nc -w 1 %s 22 & done\n", "192.168.1.100");
+    printf("# UDP нагрузка:\n");
+    printf("for i in {1..1000}; do echo 'test' | nc -u -w 1 %s 53 & done\n", "192.168.1.100");
+    printf("# ICMP нагрузка:\n");
+    printf("ping -f %s\n", "192.168.1.100");
+    printf("\nНажмите Enter для начала мониторинга...\n");
+    getchar();
+    
+    performance_monitor(60); // Мониторинг 60 секунд
+}
+
+// Функция для экспорта данных в CSV
+static void export_performance_data(const char *filename) {
+    FILE *file = fopen(filename, "w");
+    if (!file) {
+        printf("Ошибка создания файла %s\n", filename);
+        return;
+    }
+    
+    fprintf(file, "Time,Packets_Total,Packets_Dropped,Packets_Passed,Bytes_Processed,TCP_Count,UDP_Count,ICMP_Count\n");
+    
+    struct stats stat;
+    uint32_t key = 0;
+    
+    for (int i = 0; i < 60; i++) {
+        sleep(1);
+        if (bpf_map_lookup_elem(stats_map_fd, &key, &stat) == 0) {
+            fprintf(file, "%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n", 
+                   i, stat.packets_processed, stat.packets_dropped, 
+                   stat.packets_passed, stat.bytes_processed,
+                   stat.tcp_packets, stat.udp_packets, stat.icmp_packets);
+        }
+    }
+    
+    fclose(file);
+    printf("Данные экспортированы в %s\n", filename);
+}
+
 static void print_usage(const char *prog_name) {
     printf("Использование: %s <интерфейс> [команды]\n\n", prog_name);
     printf("Команды:\n");
@@ -167,14 +238,42 @@ static void print_usage(const char *prog_name) {
     printf("     Добавить правило (используйте 0 для 'любой')\n");
     printf("     protocol: 0=любой, 1=ICMP, 6=TCP, 17=UDP\n");
     printf("     action: 0=DROP, 1=PASS\n");
-    printf("  -b <ip>  Заблокировать IP адрес\n");
-    printf("  -s       Показать статистику\n");
-    printf("  -d       Демон режим (мониторинг)\n\n");
-    printf("  --detach Полностью отключить XDP Firewall от интерфейса\n");
+    printf("  -rdel <id>         Удалить правило по ID\n");
+    printf("  -list              Показать все текущие правила\n");
+    printf("  -b <ip>            Заблокировать IP адрес\n");
+    printf("  -bun <ip>          Разблокировать IP адрес\n");
+    printf("  -s                 Показать статистику\n");
+    printf("  -d                 Демон режим (мониторинг)\n");
+    printf("  --detach           Полностью отключить XDP Firewall от интерфейса\n\n");
     printf("Примеры:\n");
-    printf("  %s eth0 -r 1 0 0 0 22 6 0    # Блокировать SSH на порт 22\n", prog_name);
+    printf("  %s eth0 -r 1 0 0 0 22 6 0       # Блокировать SSH на порт 22\n", prog_name);
     printf("  %s eth0 -r 2 192.168.1.100 0 0 0 0 1  # Разрешить трафик с IP\n", prog_name);
-    printf("  %s eth0 -b 192.168.1.200    # Заблокировать IP\n", prog_name);
+    printf("  %s eth0 -b 192.168.1.200         # Заблокировать IP\n", prog_name);
+    printf("  %s eth0 -bun 192.168.1.200       # Разблокировать IP\n", prog_name);
+    printf("  %s eth0 -rdel 1                  # Удалить правило с ID=1\n", prog_name);
+    printf("  %s eth0 -list                    # Показать все правила\n", prog_name);
+}
+
+static void list_rules() {
+    struct rule rule;
+    uint32_t key;
+    printf("\n=== Текущие правила ===\n");
+    for (key = 0; key < MAX_RULES; key++) {
+        if (bpf_map_lookup_elem(rules_map_fd, &key, &rule) == 0 && rule.enabled) {
+            struct in_addr src_ip = { .s_addr = htonl(rule.src_ip) };
+            struct in_addr dst_ip = { .s_addr = htonl(rule.dst_ip) };
+
+            printf("ID: %u | SRC: %s:%u | DST: %s:%u | PROTO: %u | ACTION: %s\n",
+                   key,
+                   rule.src_ip ? inet_ntoa(src_ip) : "ANY",
+                   rule.src_port,
+                   rule.dst_ip ? inet_ntoa(dst_ip) : "ANY",
+                   rule.dst_port,
+                   rule.protocol,
+                   rule.action == 0 ? "DROP" : "PASS");
+        }
+    }
+    printf("=======================\n\n");
 }
 
 static void detach_firewall(const char *interface) {
@@ -290,7 +389,9 @@ int main(int argc, char **argv) {
             
             add_rule(rule_id, src_ip, dst_ip, src_port, dst_port, protocol, action);
             i += 7;
-        } else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
+        } else if (strcmp(argv[i], "-list") == 0) {
+    	    list_rules();
+	} else if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
             // Заблокировать IP
             block_ip(argv[i+1]);
             i++;
@@ -311,7 +412,17 @@ int main(int argc, char **argv) {
                 sleep(5);
                 show_stats();
             }
-        }
+        } else if (strcmp(argv[i], "-perf") == 0) {
+    	    // Тест производительности
+   	    performance_monitor(30);
+	} else if (strcmp(argv[i], "-stress") == 0) {
+    	    // Стресс-тест
+    	    stress_test_mode();
+	} else if (strcmp(argv[i], "-export") == 0 && i + 1 < argc) {
+    	    // Экспорт данных
+    	    export_performance_data(argv[i+1]);
+    	    i++;
+	}
     }
     
     if (argc == 2 || test_mode) {
