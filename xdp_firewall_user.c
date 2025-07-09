@@ -23,7 +23,6 @@
 #define XDP_FLAGS_UPDATE_IF_NOEXIST 1U
 #endif
 
-// Структуры должны совпадать с ядерными
 struct rule {
     uint32_t src_ip;
     uint32_t dst_ip;
@@ -51,19 +50,6 @@ static int blocked_ips_fd = -1;
 static int stats_map_fd = -1;
 static int prog_fd = -1;
 static int ifindex = -1;
-
-//static void cleanup() {
-//    if (ifindex > 0 && prog_fd > 0) {
-//        printf("Отключаем XDP программу от интерфейса...\n");
-//        bpf_xdp_detach(ifindex, 0, NULL);
-//    }
-//}
-
-//static void signal_handler(int sig) {
-//    (void)sig;
-//    cleanup();
-//    exit(0);
-//}
 
 // Функция для конвертации IP строки в число
 static uint32_t ip_to_int(const char *ip_str) {
@@ -371,10 +357,6 @@ int main(int argc, char **argv) {
     
     printf("XDP Firewall успешно загружен на интерфейс %s\n", interface);
     
-    // Устанавливаем обработчик сигналов
-    //signal(SIGINT, signal_handler);
-    //signal(SIGTERM, signal_handler);
-    
     // Обрабатываем аргументы командной строки
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-r") == 0 && i + 7 < argc) {
@@ -424,7 +406,7 @@ int main(int argc, char **argv) {
     	    i++;
 	}
     }
-    
+
     if (argc == 2 || test_mode) {
         if (test_mode) {
             printf(">>> Тестовый режим: ждём 2 секунды и выходим\n");
@@ -437,7 +419,6 @@ int main(int argc, char **argv) {
             }
         }
     }
-    
-    //cleanup();
+
     return 0;
 }

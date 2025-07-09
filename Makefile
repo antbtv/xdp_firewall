@@ -1,19 +1,11 @@
 CC = clang
 CFLAGS = -O2 -g -Wall -Wextra
 
-# BPF программа
 BPF_CFLAGS = -O2 -g -target bpf -I. \
     -Wall -Wno-unused-value -Wno-pointer-sign \
     -Wno-gnu-variable-sized-type-not-at-end \
     -Wno-address-of-packed-member
-#BPF_CFLAGS = -O2 -target bpf -D__KERNEL__ -D__ASM_SYSREG_H \
-#             -Wno-unused-value -Wno-pointer-sign \
-#             -Wno-compare-distinct-pointer-types \
-#             -Wno-gnu-variable-sized-type-not-at-end \
-#             -Wno-address-of-packed-member -Wno-tautological-compare \
-#             -Wno-unknown-warning-option
 
-# Userspace программа
 USER_CFLAGS = $(CFLAGS) -I/usr/include
 USER_LDFLAGS = -lbpf -lelf -lz
 
@@ -37,7 +29,6 @@ install: all
 	sudo cp xdp_firewall_kern.o /usr/local/lib/
 	sudo chmod +x /usr/local/bin/xdp_firewall_user
 
-# Правила для тестирования
 test-compile: all
 	@echo "Компиляция завершена успешно"
 
@@ -47,7 +38,6 @@ test-load: all
 	@echo "Тест загрузки завершен"
 	@cat /tmp/xdp.log
 
-# Проверка зависимостей
 check-deps:
 	@echo "Проверяем зависимости..."
 	@which clang > /dev/null || (echo "ОШИБКА: clang не установлен" && exit 1)
@@ -55,13 +45,11 @@ check-deps:
 	@ls /usr/include/linux/bpf.h > /dev/null || (echo "ОШИБКА: linux-headers не установлены" && exit 1)
 	@echo "Все зависимости установлены"
 
-# Установка зависимостей для Debian/Ubuntu
 install-deps:
 	sudo apt update
 	sudo apt install -y clang llvm libbpf-dev linux-headers-$(shell uname -r) \
 		build-essential pkg-config libelf-dev
 
-# Отладочная информация
 debug-info:
 	@echo "=== Информация о системе ==="
 	@echo "Архитектура: $(shell uname -m)"
